@@ -1,0 +1,10 @@
+Flask>=2.3.3
+# Windows specific
+pywin32>=306
+wmi>=1.5.1
+# Linux specific (no extra requirements needed)
+# LLM support (optional)
+llama-cpp-python>=0.2.26
+# Utilities
+python-dateutil>=2.8.2
+requests>=2.31.0
