@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/png" href="../static/myicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forensic Assistant - Linux Edition</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .artifact-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .artifact-card {
+            background: linear-gradient(135deg, #134e5e, #71b280);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .artifact-card:hover { transform: translateY(-5px); }
+        .artifact-card h3 { color: #00d4ff; margin-bottom: 8px; }
+        .artifact-card p  { font-size: 0.85em; color: #ccc; }
+        .quick-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 15px 0;
+            justify-content: center;
+        }
+        .quick-btn {
+            background: rgba(0,212,255,0.2);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .quick-btn:hover { background: rgba(0,212,255,0.4); }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>🐧 Forensic Assistant - Linux Edition</h1>
+        <div class="info">
+            <span>{{ system_info.os }}</span> |
+            <span>{{ system_info.hostname }}</span> |
+            <span class="{{ 'admin' if system_info.is_admin else 'warn' }}">
+                {{ '✓ Root' if system_info.is_admin else '⚠ No Root' }}
+            </span>
+            <span class="badge">30 Days</span>
+        </div>
+    </header>
+
+    <div class="artifact-grid">
+        <div class="artifact-card" onclick="quickQuery('browser history')">
+            <h3>🌐 Browser History</h3>
+            <p>Chrome, Chromium, Firefox</p>
+        </div>
+        <div class="artifact-card" onclick="quickQuery('USB devices')">
+            <h3>💾 External Storage</h3>
+            <p>USB drives, external devices</p>
+        </div>
+        <div class="artifact-card" onclick="quickQuery('system logs')">
+            <h3>📋 System Logs</h3>
+            <p>Journalctl, kernel messages</p>
+        </div>
+        <div class="artifact-card" onclick="quickQuery('recent files')">
+            <h3>📁 Recent Files</h3>
+            <p>Recently accessed documents</p>
+        </div>
+    </div>
+
+    <div class="quick-buttons">
+        <div class="quick-btn" onclick="quickQuery('show Chrome history of today')">Chrome Today</div>
+        <div class="quick-btn" onclick="quickQuery('show external USB devices')">USB Devices</div>
+        <div class="quick-btn" onclick="quickQuery('show system logs of yesterday')">System Logs</div>
+        <div class="quick-btn" onclick="quickQuery('show recent files of last 7 days')">Recent 7 Days</div>
+        <div class="quick-btn" onclick="quickQuery('show browser history')">All History</div>
+    </div>
+
+    <div class="buttons">
+        <button id="analyzeBtn" onclick="analyze()">🔎 Analyze System</button>
+        <button id="reportBtn"  onclick="fullReport()">📄 Full Report</button>
+        <button onclick="exportJSON()">📤 Export JSON</button>
+        <button onclick="document.getElementById('importFile').click()">📥 Import JSON</button>
+        <input type="file" id="importFile" accept=".json"
+               style="display:none" onchange="importJSON(this.files[0])">
+    </div>
+
+    <div class="chat-box">
+        <div id="messages" class="messages">
+            <div class="msg bot">
+                <p>👋 <b>Welcome to Linux Forensic Assistant!</b></p>
+                <p>📌 Click <b>Analyze System</b> first, then ask questions like:</p>
+                <ul>
+                    <li>"Show Chrome history of today"</li>
+                    <li>"Show browser history of 20 January"</li>
+                    <li>"Show system logs"</li>
+                    <li>"Show recent files of yesterday"</li>
+                    <li>"Show USB devices"</li>
+                </ul>
+                <p>📥 After each query, click <b>Download Report</b> to get only that data!</p>
+            </div>
+        </div>
+        <div class="input-area">
+            <input type="text" id="query"
+                   placeholder="Ask about forensic data..."
+                   onkeypress="if(event.key==='Enter')send()">
+            <button onclick="send()">Send</button>
+        </div>
+    </div>
+</div>
+
+<div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p id="loadingText">Processing...</p>
+</div>
+
+<script>
+const msgs        = document.getElementById('messages');
+const input       = document.getElementById('query');
+const loading     = document.getElementById('loading');
+const loadingText = document.getElementById('loadingText');
+
+let lastQueryResult = null;
+
+function showLoading(t) {
+    loadingText.textContent = t;
+    loading.classList.remove('hidden');
+}
+function hideLoading() {
+    loading.classList.add('hidden');
+}
+
+// ✅ safe HTML escape
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function addMsg(content, isUser, isHtml) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + (isUser ? 'user' : 'bot');
+    if (isHtml) {
+        d.innerHTML = content;
+    } else {
+        const p = document.createElement('p');
+        p.textContent = content;
+        d.appendChild(p);
+    }
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+}
+
+function formatData(data) {
+    if (!data || !data.length) return '';
+
+    const groups = {};
+    data.forEach(item => {
+        let type = 'Other';
+        if (item.browser && item.url)                      type = 'Browser History';
+        else if (item.log_type && item.message && !item.event_id) type = 'System Logs';
+        else if (item.event_id !== undefined)                type = 'Event Logs';
+        else if (item.device_name && item.connection_type) type = 'USB Devices';
+        else if (item.exe_name)                            type = 'Prefetch Files';
+        else if (item.file_type || item.target_path)       type = 'Recent Files';
+        if (!groups[type]) groups[type] = [];
+        groups[type].push(item);
+    });
+
+    let html = '';
+    for (const [typeName, items] of Object.entries(groups)) {
+        if (!items.length) continue;
+        const allKeys = Object.keys(items[0]).filter(k => k !== 'id');
+        let keys = [];
+        if (typeName === 'Browser History') keys = ['browser','profile','title','url','visit_time','visit_date'];
+        else if (typeName === 'System Logs') keys = ['log_type','source','timestamp','log_date','message'];
+        else if (typeName === 'Event Logs') keys = ['log_type','event_id','source','level','event_date','message'];
+        else if (typeName === 'USB Devices') keys = ['device_name','connection_type','vendor','last_connected','connect_date','mount_point'];
+        else if (typeName === 'Prefetch Files') keys = ['exe_name','run_count','last_run','run_date','file_path'];
+        else if (typeName === 'Recent Files') keys = ['name','file_type','accessed_time','access_date','target_path'];
+        else keys = allKeys.slice(0,6);
+        keys = keys.filter(k => allKeys.includes(k));
+        const headerCells = keys.map(k => `<th>${escapeHtml(k.replace(/_/g,' '))}</th>`).join('');
+        let rowsHtml = '';
+        items.slice(0, 50).forEach(item => {
+            const cells = keys.map(k => {
+                const raw = item[k] !== undefined ? String(item[k]) : '';
+                const display = raw.length > 80 ? raw.slice(0,80)+'…' : raw;
+                return `<td title="${escapeHtml(raw)}">${escapeHtml(display)}</td>`;
+            }).join('');
+            rowsHtml += `<tr>${cells}</tr>`;
+        });
+        let moreRow = '';
+        if (items.length > 50) {
+            moreRow = `<tr><td colspan="${keys.length}" style="text-align:center;color:#aaa;">… and ${items.length-50} more rows</td></tr>`;
+        }
+        html += `
+        <details open>
+          <summary>📊 ${escapeHtml(typeName)} (${items.length} items)</summary>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>${headerCells}</tr></thead>
+              <tbody>${rowsHtml}${moreRow}</tbody>
+            </table>
+          </div>
+        </details>`;
+    }
+    html += `<button class="dl-btn" onclick="downloadQueryReport()">
+                📥 Download Report (${data.length} items)
+             </button>`;
+    return html;
+}
+
+function renderResponse(text) {
+    return escapeHtml(text)
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+        .replace(/##\s*(.*?)(\n|$)/g,  '<h3>$1</h3>')
+        .replace(/###\s*(.*?)(\n|$)/g, '<h4>$1</h4>')
+        .replace(/\n/g, '<br>');
+}
+
+function quickQuery(q) {
+    input.value = q;
+    send();
+}
+
+async function analyze() {
+    const btn = document.getElementById('analyzeBtn');
+    btn.disabled    = true;
+    btn.textContent = '⏳ Analyzing...';
+    showLoading('Collecting Linux forensic data (last 30 days)...');
+    addMsg('🔄 Starting Linux forensic analysis...', false, false);
+
+    try {
+        const r = await fetch('/analyze', { method: 'POST' });
+        const d = await r.json();
+        if (d.success) {
+            let h = '<p>✅ <b>Analysis Complete!</b></p><ul>';
+            for (const [k, v] of Object.entries(d.collected)) {
+                const icon = v > 0 ? '✓' : '○';
+                h += `<li>${icon} ${escapeHtml(k.replace(/_/g,' '))}: <b>${v}</b></li>`;
+            }
+            h += '</ul><p>💡 Now ask questions about the collected data!</p>';
+            addMsg(h, false, true);
+        } else {
+            addMsg('❌ ' + escapeHtml(d.message || 'Analysis failed'), false, false);
+        }
+    } catch (e) {
+        addMsg('❌ Error: ' + escapeHtml(e.message), false, false);
+    }
+    hideLoading();
+    btn.disabled    = false;
+    btn.textContent = '🔎 Analyze System';
+}
+
+async function send() {
+    const q = input.value.trim();
+    if (!q) return;
+
+    addMsg(q, true, false);
+    input.value = '';
+    showLoading('Searching forensic data...');
+
+    try {
+        const r = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q })
+        });
+        const d = await r.json();
+
+        lastQueryResult = {
+            query: q,
+            data: d.data || [],
+            date_filter: d.date_filter,
+            browser_filter: d.browser_filter,
+            success: d.success
+        };
+
+        let h = '<div class="response">';
+        h += '<p>' + renderResponse(d.response || 'No response') + '</p>';
+        if (d.success && d.data && d.data.length > 0) {
+            h += formatData(d.data);
+        }
+        h += '</div>';
+        addMsg(h, false, true);
+    } catch (e) {
+        addMsg('❌ Error: ' + escapeHtml(e.message), false, false);
+        console.error(e);
+    }
+    hideLoading();
+}
+
+// ✅ Download query report (stays on page)
+async function downloadQueryReport() {
+    if (!lastQueryResult || !lastQueryResult.data || !lastQueryResult.data.length) {
+        alert('No data to download. Please run a query first.');
+        return;
+    }
+    showLoading(`Generating report for ${lastQueryResult.data.length} items...`);
+    try {
+        const r = await fetch('/report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query_data: {
+                    query: lastQueryResult.query,
+                    date_filter: lastQueryResult.date_filter,
+                    browser_filter: lastQueryResult.browser_filter
+                },
+                filtered_data: lastQueryResult.data
+            })
+        });
+        const d = await r.json();
+        if (d.success) {
+            const a = document.createElement('a');
+            a.href = d.download_url;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            addMsg(`📥 Report download started: ${d.items_count} items.`, false, false);
+        } else {
+            addMsg('❌ Report failed: ' + escapeHtml(d.message || ''), false, false);
+        }
+    } catch (e) {
+        addMsg('❌ Error: ' + escapeHtml(e.message), false, false);
+    }
+    hideLoading();
+}
+
+// ✅ Full report download (stays on page)
+async function fullReport() {
+    showLoading('Generating full report...');
+    try {
+        const response = await fetch('/full-report');
+        if (!response.ok) throw new Error('Report generation failed');
+        const blob = await response.blob();
+        // Extract filename from Content-Disposition if possible, else use default
+        let filename = 'full_report.html';
+        const disposition = response.headers.get('Content-Disposition');
+        if (disposition && disposition.indexOf('filename=') !== -1) {
+            const match = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
+            if (match && match[1]) filename = match[1].replace(/['"]/g, '');
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        addMsg('📥 Full report download started.', false, false);
+    } catch (e) {
+        addMsg('❌ Full report error: ' + escapeHtml(e.message), false, false);
+    }
+    hideLoading();
+}
+
+// ✅ EXPORT JSON – fixed to download without leaving the page
+async function exportJSON() {
+    showLoading('Exporting JSON data...');
+    try {
+        const response = await fetch('/export/json');
+        if (!response.ok) throw new Error('Export failed');
+        const blob = await response.blob();
+        let filename = 'forensic_export.json';
+        const disposition = response.headers.get('Content-Disposition');
+        if (disposition && disposition.indexOf('filename=') !== -1) {
+            const match = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
+            if (match && match[1]) filename = match[1].replace(/['"]/g, '');
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        addMsg('📤 JSON export download started.', false, false);
+    } catch (e) {
+        addMsg('❌ Export error: ' + escapeHtml(e.message), false, false);
+    }
+    hideLoading();
+}
+
+async function importJSON(file) {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    const clearExisting = confirm('Clear existing data before import?\n(Cancel = merge)');
+    showLoading('Importing JSON...');
+    try {
+        const r = await fetch(`/import?clear=${clearExisting}`, {
+            method: 'POST', body: formData
+        });
+        const d = await r.json();
+        if (d.success) {
+            addMsg('✅ Import successful!', false, false);
+        } else {
+            addMsg('❌ Import failed: ' + escapeHtml(d.error || ''), false, false);
+        }
+    } catch (e) {
+        addMsg('❌ Import error: ' + escapeHtml(e.message), false, false);
+    } finally {
+        hideLoading();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => input.focus());
+</script>
+</body>
+</html>
